@@ -21,6 +21,7 @@ component/uart \
 device \
 drivers \
 source \
+source/patterns \
 startup \
 utilities \
 
