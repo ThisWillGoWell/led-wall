@@ -144,10 +144,9 @@ void initPatterns(){
 // Patterns
 #define num_patterns 9
 PatternFunc patterns[] = {
-		steroVuMeter,
-		rainbowPattern,
-		sparkelPattern,
 		fadeOff,
+		rainbowPattern,
+		steroVuMeter,
 		steroMiddleVuMeter,
 		fadeOff,
 		brightnessTestPattern,

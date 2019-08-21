@@ -355,20 +355,23 @@ void initDspi(void){
 // Power Calculations
 #define mA 1000 // 1000 us
 #define Amp 1000000
-#define BASE_LED_COST = 1000 // 1 mA, 1000uA when the lds are off to power
-#define BASE_CURRENT = NUM_LEDS * BASE_LED_COST
+#define BASE_LED_COST  1000 // 1 mA, 1000uA when the lds are off to power
+#define BASE_CURRENT  NUM_LEDS * BASE_LED_COST
 
-#define UA_PER_LED = 4531;
+#define UA_PER_LED  4531;
 
-uint32_t currentPower;
+uint32_t currentPower = 0;
 
 
 void set_led_strip(uint8_t *leds, int index,  uint8_t r, uint8_t g, uint8_t b){
-
+	uint32_t startPower = currentPower;
 	currentPower -= leds[index+1];
 	currentPower -= leds[index+2];
 	currentPower -= leds[index+3];
 
+	if(currentPower > startPower){
+		currentPower = 0;
+	}
 	leds[index + 1] =  b;
 	leds[index + 2] = g;
 	leds[index + 3] = r;
@@ -681,30 +684,47 @@ uint8_t* getMode(){
 i2c_slave_handle_t g_s_handle;
 volatile bool g_SlaveCompletionFlag = false;
 uint8_t address_selected;
-uint8_t current_address;
+uint8_t *volatile current_address;
+uint8_t slave_buff[10];
+uint8_t write;
 
-void update_slave_xfer( i2c_slave_transfer_t *xfer, int write ){
-	switch(current_address){
+uint8_t readIndex = 0;
+
+i2c_slave_transfer_event_t lastEvent;
+void update_slave_get_info(i2c_slave_transfer_t *xfer){
+	xfer->data = &slave_buff[1];
+	switch(slave_buff[0]){
 	case MODE_ADDRESS:
-		xfer->data = &mode_data;
-		xfer->dataSize = MODE_DATA_SIZE;
+		slave_buff[1] = mode_data[0];
+		xfer->dataSize = 1;
 		break;
 	case CURRENT_POWER_ADDRESS:
-		if(!write){
-			xfer->data = &currentPower;
-			xfer->dataSize = 4;
-		} else{
-			emptyData = 0;
-			xfer->data = &emptyData;
-			xfer->dataSize = 1;
-		}
+
+		slave_buff[4] = (currentPower & 0xFF000000) >> 24;
+		slave_buff[3] = (currentPower & 0x00FF0000) >> 16;
+		slave_buff[2] = (currentPower & 0x0000FF00) >> 8;
+		slave_buff[1] = (currentPower & 0x000000FF);
+		xfer -> dataSize = 4;
 		break;
 	default:
-		emptyData =0;
-		xfer->data = &emptyData;
-		xfer->dataSize = 1;
+		xfer->data = NULL;
+		xfer->dataSize = 0;
 	}
 
+
+
+}
+
+
+void set_info_from_buffer(){
+	int e;
+	switch(slave_buff[0]){
+	case MODE_ADDRESS:
+		mode_data[0] = slave_buff[1];
+		break;
+	default:
+		e = 1;
+	}
 }
 
 
@@ -714,43 +734,64 @@ static void i2c_slave_callback(I2C_Type *base, i2c_slave_transfer_t *xfer, void 
     {
         /*  Address match event */
         case kI2C_SlaveAddressMatchEvent:
+        	//PRINTF("matched\n");
             xfer->data = NULL;
             xfer->dataSize = 0;
-        	address_selected = 0;
             break;
         /*  Transmit request */
         case kI2C_SlaveTransmitEvent:
+        	//PRINTF("transmit\n");
             /*  Update information for transmit process */
-            update_slave_xfer(xfer, 0);
+        	update_slave_get_info(xfer);
             break;
 
         /*  Receive request */
-        case kI2C_SlaveReceiveEvent:
-//        	PRINTF("sr");
+        case kI2C_SlaveReceiveEvent :
+        	//PRINTF("sr\n");
             /*  Update information for received process */
-        	if(address_selected){
-        		update_slave_xfer(xfer, 1);
-        	} else {
-        		xfer-> data = &current_address;
-        		xfer->dataSize = 1;
-        		address_selected = 1;
-        	}
+        	xfer->data = slave_buff;
+        	xfer->dataSize = 10;
+
+//
+//        	if(address_s	elected){
+//        		PRINTF("rx writing reg\n");
+//        		update_slave_xfer(xfer, 1);
+//        		address_selected = 0;
+//        	} else {
+//        		PRINTF("rx selecting reg\n");
+//        		xfer-> data = current_address;
+//        		xfer->dataSize = 1;
+//        		address_selected = 1;
+//        	}
             break;
 
         /*  Transfer done */
         case kI2C_SlaveCompletionEvent:
 
+        	//PRINTF("done\n");
+        	if(lastEvent == kI2C_SlaveReceiveEvent && xfer->transferredCount > 1){
+        		set_info_from_buffer();
+        	}
             xfer->data = NULL;
             xfer->dataSize = 0;
-
-            if(!address_selected){
-            	g_SlaveCompletionFlag = true;
-            }
             break;
         default:
+            xfer->data = NULL;
+            xfer->dataSize = 0;
         	break;
     }
+    lastEvent = xfer->event;
+
+//    PRINTF("");
+//   for (uint32_t i = 0U; i < 5; i++)
+//   {
+//	   PRINTF("0x%2x ", slave_buff[i]);
+//   }
+//   PRINTF("\n");
+
 }
+
+
 
 
 void initI2cPins(){
@@ -758,7 +799,7 @@ void initI2cPins(){
 	CLOCK_EnableClock(kCLOCK_PortB);
 
 	const port_pin_config_t portb2_pinG12_config = {/* Internal pull-up resistor is enabled */
-													kPORT_PullUp,
+			kPORT_PullUp,
 													/* Fast slew rate is configured */
 													kPORT_FastSlewRate,
 													/* Passive filter is disabled */
@@ -775,7 +816,7 @@ void initI2cPins(){
 	PORT_SetPinConfig(PORTB, 2U, &portb2_pinG12_config);
 
 	const port_pin_config_t portb3_pinG11_config = {/* Internal pull-up resistor is enabled */
-													kPORT_PullUp,
+			kPORT_PullUp,
 													/* Fast slew rate is configured */
 													kPORT_FastSlewRate,
 													/* Passive filter is disabled */
@@ -803,7 +844,7 @@ void initI2c(){
 	slaveConfig.slaveAddress = I2C_MASTER_SLAVE_ADDR_7BIT;
 	slaveConfig.upperAddress = 0; /*  not used for this example */
 
-	I2C_SlaveInit(I2C_SLAVE_BASEADDR, &slaveConfig, I2C_SLAVE_CLK_FREQ);
+	I2C_SlaveInit(I2C_SLAVE_BASEADDR, &slaveConfig, 1000 );
 	I2C_SlaveTransferCreateHandle(I2C_SLAVE_BASEADDR, &g_s_handle, i2c_slave_callback, NULL);
 
 	/* Set up slave transfer. */
